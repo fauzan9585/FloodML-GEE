@@ -1,0 +1,81 @@
+Map.centerObject(center, 20)
+var polarization = 'VV'
+var pass_direction = 'DESCENDING'
+
+//create the hillshade of study area
+var hillshade = ee.Terrain.hillshade(srtm)
+
+///Sentinel 1 retrieval
+
+var before_flood = Sentinel1.filterDate('2019-04-01','2020-10-30')
+  .filter(ee.Filter.eq('instrumentMode','IW'))
+  .filter(ee.Filter.listContains('transmitterReceiverPolarisation', polarization))
+  .filter(ee.Filter.eq('orbitProperties_pass',pass_direction)) 
+  .filter(ee.Filter.eq('resolution_meters',10))
+  .filterBounds(aoi)
+  .median()
+  .select(polarization);
+  //print(before_flood.size(), 'before flood') //number of imagery available in the given date
+
+var after_flood = Sentinel1.filterDate('2021-04-01','2021-10-30')
+  .filter(ee.Filter.eq('instrumentMode','IW'))
+  .filter(ee.Filter.listContains('transmitterReceiverPolarisation', polarization))
+  .filter(ee.Filter.eq('orbitProperties_pass',pass_direction)) 
+  .filter(ee.Filter.eq('resolution_meters',10))
+  .filterBounds(aoi)
+  .median()
+  .select(polarization);
+  //print(after_flood.size(), 'after flood')
+  
+//Speckle Filtering
+var smoothing_radius = 20 //randomly defined by trial and error
+var bf_filtered = before_flood.focal_mean(smoothing_radius, 'square', 'meters')
+var af_filtered = after_flood.focal_mean(smoothing_radius, 'square', 'meters')
+
+////////Difference approach//////////////////
+
+var difference = af_filtered.divide(bf_filtered)
+var difference_thres = difference.gt(1.25) //threshold given by trial and error to choose pixels affected by flood
+
+///////////////Image Refinement///////////////////////////
+
+//Compute connectivity of pixels to eliminate those connected to 10 or fewer neighbours
+ 
+var connections = difference_thres.connectedPixelCount();
+var flooded = connections.updateMask(connections.gte(10))
+
+//mask out flood with slope more than 2 
+var elevation = srtm.select('elevation');
+var slope = ee.Terrain.slope(elevation);
+var flooded2 = flooded.updateMask(slope.lte(1)) 
+
+//mask out the pixels with 8 or fewer
+var connections2 = flooded2.connectedPixelCount()
+var flooded3 = connections2.updateMask(connections2.gte(10)) 
+
+///////convert raster to vector and download it////////////////////
+var flood_vect = flooded3.reduceToVectors({
+  scale : 10,
+  geometryType:'polygon',
+  geometry: aoi,
+  eightConnected: false,
+  bestEffort:true,
+  tileScale:2,
+})
+
+//export
+Export.table.toDrive({
+  collection : flood_vect,
+  description : 'floodfeatures',
+  fileFormat : 'SHP',
+  folder :'Flood Mapping AAR'
+})
+
+
+//visualization
+
+Map.addLayer(hillshade.clip(aoi), {min : 100 , max : 500}, 'hillshade')
+Map.addLayer(slope.clip(aoi), {min : 0 , max : 60}, 'slope')
+Map.addLayer(flooded3.clip(aoi), {palette : 'red'}, 'Pixel elimination')
+Map.addLayer(titikbanjir, {color : 'blue'}, "flood found")
+Map.addLayer(flood_vect, {color : 'pink'}, 'flood_vector')
