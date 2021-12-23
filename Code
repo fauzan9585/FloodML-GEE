@@ -1,0 +1,180 @@
+//Zoom in 
+Map.centerObject(aoi, 12)
+
+// DEM thresholding
+var elevation = srtm.select('elevation') //.clip(aoi)
+var terrain = ee.Terrain.products(elevation)
+function threshold(image) {  
+  var slope = terrain.select('slope')
+  var thres = slope.lte(8).rename('thres') 
+  return image.addBands(thres)
+}
+
+//cloudmasking Sentinel 2
+function maskS2clouds(image) {
+  var qa = image.select('QA60');
+
+  // Bits 10 and 11 are clouds and cirrus, respectively.
+  var cloudBitMask = 1 << 10;
+  var cirrusBitMask = 1 << 11;
+
+  // Both flags should be set to zero, indicating clear conditions.
+  var mask = qa.bitwiseAnd(cloudBitMask).eq(0)
+      .and(qa.bitwiseAnd(cirrusBitMask).eq(0));
+
+  return image.updateMask(mask).divide(10000);
+}
+
+
+//add indices
+function addindices (image) {
+  var ndvi = image.normalizedDifference(['B8', 'B4']).rename(['NDVI'])
+  var ndwi = image.normalizedDifference(['B8', 'B12']).rename(['NDWI'])
+  var mndwi = image.normalizedDifference(['B3','B12']).rename(['MNDWI'])
+
+  return image.addBands(ndvi).addBands(ndwi).addBands(mndwi)
+
+}
+
+
+//////////////////////////////////
+///Sentinel retrieval
+/////////////////////////////////
+
+//Sentinel 2
+var S2 = Sentinel2.filterDate('2021-01-01','2021-12-20')
+    .filterMetadata('CLOUDY_PIXEL_PERCENTAGE','less_than',20)
+    .filterBounds(aoi)
+    .map(maskS2clouds)
+    .map(addindices)
+    .map(threshold)
+    .median()
+    .clip(aoi)
+    print(S2, 'total_image_Sentinel 2')
+
+//selecting the specific band of Sentinel 2 imagery
+var S2_ndvi = S2.select('NDVI')
+var S2_ndwi = S2.select('NDWI')
+var S2_mndwi = S2.select ('MNDWI')
+var S2_dem = S2.select('thres')
+
+
+//Sentinel 1
+var S1 = Sentinel1.filterDate('2021-01-01','2021-12-20')
+    .filterBounds(aoi)
+    .filter(ee.Filter.eq('instrumentMode', 'IW'))
+    .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV'))
+    .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VH'))
+    .filter(ee.Filter.eq('orbitProperties_pass', 'DESCENDING'))
+    .filterMetadata('resolution_meters', 'equals', 10)
+    .median()
+    .clip(aoi)
+    print(S1, 'total_image S1')
+
+
+//Concatenating S1 and S2 
+var S2_bands = S2.select(['NDWI', 'NDVI'])
+var S1_bands = S1.select(['VV', 'VH'])
+var fused = ee.Image.cat(S1_bands, S2_bands)
+print(fused, 'fused')
+
+
+//////////////////////////////////////////
+///Samples Preparation
+/////////////////////////////////////////
+
+var flood = floodpoint.map(function(f){
+      return f.set('class',1)
+    })
+    
+print(flood.first())
+
+var nonflood = nonfloodpoint.map(function(f){
+      return f.set('class',0)
+    })
+
+//merge two groups of sampels
+var samples = flood.merge(nonflood)
+print(samples)
+
+//// Sample the input imagery to get a FeatureCollection of training data
+var training = fused.sampleRegions ({
+  collection : samples,
+  properties : ['class'],
+  scale : 10
+})
+
+//splitting to 80% training, 20 % test
+var data = training.randomColumn('random', 0)// 'random is a new column where a random number are set for splitting
+print(data)
+
+var split = 0.7 //roughly 80% for training data and 20 for testing data
+var train = data.filter(ee.Filter.lt('random', split)) 
+var test = data.filter(ee.Filter.gte('random', split))
+
+print(train.getInfo())
+///////////////////////////////////////////
+///Machine Learning Implementation
+///////////////////////////////////////////
+var bands = ['NDVI', 'NDWI', 'VH', 'VV']
+//////1. Random Forest ////////////////
+var classifier = ee.Classifier.smileRandomForest(500).train({
+  features : train,
+  classProperty : 'class',
+  inputProperties : bands
+})
+
+//classify the input image
+var classified = fused.select(bands).classify(classifier)
+print(classified)
+
+//accuracy assessment of the 80% training
+var trainAccuracy = classifier.confusionMatrix();
+print('Resubstitution error matrix: ', trainAccuracy);
+print('Training overall accuracy: ', trainAccuracy.accuracy())
+
+//classifty the test data
+var testclassified = test.classify(classifier) 
+
+//accuracy assessment
+var testAccuracy = testclassified.errorMatrix('class', 'classification');
+print('RF Validation error matrix: ', testAccuracy);
+print('RF Validation overall accuracy: ', testAccuracy.accuracy());
+
+/////////2. Support Vector Machine///////////////
+var classifier_svm = ee.Classifier.libsvm({
+  kernelType : 'RBF',
+  gamma : 0.5,
+  cost : 10
+})
+
+var training_svm = classifier_svm.train(train ,'class', bands)
+
+//classify training data
+var classified_svm = fused.select(bands).classify(training_svm)
+
+//classifty testing data
+var testclassified_svm = test.classify(training_svm)
+
+//accuracy assessment
+var svmAccuracy = testclassified_svm.errorMatrix('class', 'classification')
+print('SVM error matrix', svmAccuracy)
+print('SVM overall accuracy', svmAccuracy.accuracy())
+
+///////////Feature Importance///////////////////
+var rfimportance = classifier.explain()
+print('RF feaures importance', rfimportance)
+
+var svmimportance = training_svm.explain()
+print('SVM features importance', svmimportance)
+
+/////////////////////////////////////
+///Visualization
+//////////////////////////////////////
+var palette = [
+  'D3D3D3', // nonflood(0)  // grey
+  '0000FF'] //flood // blue
+
+Map.addLayer(classified_svm,{min : 0 , max: 1 ,pallete:palette }, 'SVM Flood map' )
+Map.addLayer(classified, {min : 0 , max: 1 ,pallete:palette }, 'RF Flood map')
+Map.addLayer(titikbanjir, {color : 'red'}, 'titik banjir')
