@@ -143,9 +143,9 @@ print('RF Validation overall accuracy: ', testAccuracy.accuracy());
 
 /////////2. Support Vector Machine///////////////
 var classifier_svm = ee.Classifier.libsvm({
-  kernelType : 'RBF',
-  gamma : 0.5,
-  cost : 10
+  kernelType : 'RBF', //recommended for non linear separation
+  gamma : 0.5, //the radius of the area of influence of samples selected by the model
+  cost : 10 // how much error is bearaeble and tolerable
 })
 
 var training_svm = classifier_svm.train(train ,'class', bands)
