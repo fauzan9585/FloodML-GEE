@@ -1,0 +1,6 @@
+//Selecting value of 1 as flood area
+var onlyFlood = Floodsvm.updateMask(Floodrf.eq(1))
+
+//Mask out 10 pixel or fewer (overestimation)
+var connections = onlyFlood.connectedPixelCount()
+var flooded = connections.updateMask(connections.gte(10))
