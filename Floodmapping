@@ -144,8 +144,8 @@ print('RF Validation overall accuracy: ', testAccuracy.accuracy());
 /////////2. Support Vector Machine///////////////
 var classifier_svm = ee.Classifier.libsvm({
   kernelType : 'RBF', //recommended for non linear separation
-  gamma : 0.5, //the radius of the area of influence of samples selected by the model
-  cost : 10 // how much error is bearaeble and tolerable
+  gamma : , //the radius of the area of influence of samples selected by the model
+  cost :  // how much error is bearaeble and tolerable
 })
 
 var training_svm = classifier_svm.train(train ,'class', bands)
@@ -176,5 +176,4 @@ var palette = [
   '0000FF'] //flood // blue
 
 Map.addLayer(classified_svm,{min : 0 , max: 1 ,pallete:palette }, 'SVM Flood map' )
-Map.addLayer(classified, {min : 0 , max: 1 ,pallete:palette }, 'RF Flood map')
-Map.addLayer(titikbanjir, {color : 'red'}, 'titik banjir')
+Map.addLayer(classified, {min : 0 , max: 1 ,pallete:palette }, ' RF Flood map')
